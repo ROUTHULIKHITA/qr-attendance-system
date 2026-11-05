@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>College Attendance (Database)</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--tx:#1b1f2a;--mu:#6b7280;--ac:#4f46e5;--ok:#16a34a;--no:#dc2626;--bd:#e5e7eb}
+@media (prefers-color-scheme:dark){:root{--bg:#12141c;--card:#1c1f2b;--tx:#e8eaf0;--mu:#9aa1b2;--ac:#818cf8;--ok:#4ade80;--no:#f87171;--bd:#2c3040}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.4}
+main{max-width:640px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem;margin:8px 0 12px}
+button,input{font:inherit;color:inherit}
+.tabs{display:flex;gap:8px;margin-bottom:12px}
+.tab{flex:1;padding:10px;border:1px solid var(--bd);background:var(--card);border-radius:10px;cursor:pointer}
+.tab.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:12px}
+input{padding:9px;border:1px solid var(--bd);border-radius:8px;background:var(--bg)}
+.row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--bd)}
+.row:last-child{border:0}.nm{flex:1}
+.pa{display:flex;gap:6px}
+.pa button{padding:6px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);cursor:pointer}
+.pa .p.on{background:var(--ok);color:#fff;border-color:var(--ok)}
+.pa .a.on{background:var(--no);color:#fff;border-color:var(--no)}
+.btn{padding:9px 14px;border:0;border-radius:8px;background:var(--ac);color:#fff;cursor:pointer}
+.x{background:none;border:0;color:var(--mu);cursor:pointer;font-size:1.1rem}
+.bar{height:8px;border-radius:4px;background:var(--bd);overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%}
+.warn{color:var(--no);font-size:.8rem;font-weight:600}
+.mu{color:var(--mu);font-size:.85rem}
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#msg{color:var(--no);font-weight:600;margin-bottom:8px}
+</style></head>
+<body><main>
+<div style="display:flex;justify-content:space-between;align-items:center"><h1>📋 College Attendance</h1><button class="x" id="lo" onclick="logout()" hidden>Log out</button></div>
+<div id="msg"></div>
+<div class="tabs"><button class="tab on" id="t1">Mark attendance</button><button class="tab" id="t2">Monthly summary</button><button class="tab" id="t3">Students</button></div>
+<div id="vl" hidden></div><div id="v1"></div><div id="v2" hidden></div><div id="v3" hidden></div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+/* STEP: paste your two values between the quotes */
+var SB_URL="https://izwaogevqairkghfeamj.supabase.co";
+var SB_KEY="sb_publishable_ExrkBlA7JEc-5U4onlWZkw_X5W_I1T5";
+
+var db=supabase.createClient(SB_URL,SB_KEY);
+var students=[],classes=[],att={},cur=null;
+var today=new Date().toISOString().slice(0,10);
+var subject="",date=today,month=today.slice(0,7);
+
+function msg(t){document.getElementById("msg").textContent=t||""}
+function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
+function val(id){return document.getElementById(id).value}
+
+async function load(){
+  var a=await db.from("students").select("*").order("name");
+  var b=await db.from("classes").select("*").order("class_date",{ascending:false});
+  var c=await db.from("attendance").select("*");
+  var err=a.error||b.error||c.error;
+  if(err){msg("Database error: "+err.message);return}
+  msg("");
+  students=a.data;classes=b.data;att={};
+  c.data.forEach(function(r){att[r.student_id+"|"+r.class_id]=r.status});
+  render();
+}
+
+function inMin(m){return new Date(Date.now()+m*60000).toISOString()}
+function curClass(){return classes.find(function(c){return c.id===cur})}
+function friendly(e){return /row-level security/i.test(e.message)?"Attendance is closed. Click Add 5 min to reopen it.":e.message}
+
+async function setClose(iso){
+  var r=await db.from("classes").update({closes_at:iso}).eq("id",cur).select().single();
+  if(r.error){msg(r.error.message);return}
+  var i=classes.findIndex(function(c){return c.id===cur});classes[i]=r.data;
+  msg("");render();rotate();
+}
+function extend(){
+  var c=curClass(),base=Math.max(Date.now(),c&&c.closes_at?new Date(c.closes_at).getTime():0);
+  setClose(new Date(base+300000).toISOString());
+}
+function closeNow(){setClose(new Date().toISOString())}
+
+async function startClass(){
+  subject=val("sub").trim();date=val("dt")||today;
+  if(!subject){msg("Please enter a subject.");return}
+  var f=classes.find(function(c){return c.subject===subject&&c.class_date===date});
+  if(!f){
+    var r=await db.from("classes").insert({subject:subject,class_date:date,closes_at:inMin(5)}).select().single();
+    if(r.error){msg(r.error.message);return}
+    f=r.data;classes.unshift(f);msg("");cur=f.id;qrTok=null;render();rotate();
+  }else{cur=f.id;qrTok=null;await setClose(inMin(5))}
+}
+
+function tick(){
+  var el=document.getElementById("cd");if(!el)return;
+  var c=curClass(),left=c&&c.closes_at?new Date(c.closes_at).getTime()-Date.now():0;
+  if(left>0){var t=Math.floor(left/1000);el.textContent="Open for "+Math.floor(t/60)+":"+("0"+t%60).slice(-2);el.style.color="var(--ok)"}
+  else{el.textContent="Attendance closed";el.style.color="var(--no)"}
+}
+
+async function mark(sid,s){
+  var r=await db.from("attendance").upsert({student_id:sid,class_id:cur,status:s},{onConflict:"student_id,class_id"});
+  if(r.error){msg(friendly(r.error));return}
+  att[sid+"|"+cur]=s;render();
+}
+
+async function addStudent(){
+  var n=val("nn").trim(),roll=val("rn").trim(),pin=val("pn").trim();
+  if(!n||!roll){msg("Enter a name and a roll number.");return}
+  if(!/^\d{4,6}$/.test(pin)){msg("PIN must be 4 to 6 digits.");return}
+  var r=await db.from("students").insert({name:n,roll_no:roll,pin:pin});
+  if(r.error){msg(r.error.message);return}
+  load();
+}
+
+async function delStudent(id){
+  if(!confirm("Remove this student and their records?"))return;
+  var r=await db.from("students").delete().eq("id",id);
+  if(r.error){msg(r.error.message);return}
+  load();
+}
+
+function show(n){
+  for(var i=1;i<=3;i++){document.getElementById("v"+i).hidden=i!==n;document.getElementById("t"+i).className="tab"+(i===n?" on":"")}
+}
+["t1","t2","t3"].forEach(function(id,i){document.getElementById(id).onclick=function(){show(i+1)}});
+
+function render(){
+  /* Mark attendance */
+  var h='<div class="card tools"><input id="sub" placeholder="Subject" value="'+esc(subject)+'" style="flex:1"><input type="date" id="dt" value="'+date+'"><button class="btn" onclick="startClass()">Start class</button></div>';
+  if(cur){
+    h+='<div class="card">';
+    if(!students.length)h+='<p class="mu">Add students first.</p>';
+    students.forEach(function(s){
+      var st=att[s.id+"|"+cur];
+      h+='<div class="row"><span class="nm">'+esc(s.name)+' <span class="mu">'+esc(s.roll_no||"")+'</span></span><span class="pa"><button class="p'+(st==="present"?" on":"")+'" onclick="mark(\''+s.id+'\',\'present\')">Present</button><button class="a'+(st==="absent"?" on":"")+'" onclick="mark(\''+s.id+'\',\'absent\')">Absent</button></span></div>';
+    });
+    h+='</div><div class="card" style="text-align:center"><div id="qr" style="display:inline-block;background:#fff;padding:10px;border-radius:8px"></div><p id="cd" style="font-weight:700;margin:8px 0"></p><div class="tools" style="justify-content:center;margin-bottom:8px"><button class="btn" onclick="extend()">Add 5 min</button><button class="btn" style="background:var(--no)" onclick="closeNow()">Close now</button></div><p class="mu">Students scan, then enter roll number and PIN. The QR refreshes every 30 seconds, so old screenshots stop working.</p></div>';
+  }else h+='<p class="mu">Enter a subject and date, then click Start class.</p>';
+  document.getElementById("v1").innerHTML=h;
+  if(cur){
+    drawQR();
+    tick();
+  }
+
+  /* Monthly summary */
+  var mc=classes.filter(function(c){return c.class_date.slice(0,7)===month});
+  var s='<div class="card tools"><label>Month <input type="month" id="mo" value="'+month+'"></label><span class="mu">Classes held: '+mc.length+'</span><button class="btn" onclick="exportXlsx()">Download Excel</button></div><div class="card">';
+  if(!students.length||!mc.length)s+='<p class="mu">No classes recorded for this month.</p>';
+  students.forEach(function(st){
+    var p=0;mc.forEach(function(c){if(att[st.id+"|"+c.id]==="present")p++});
+    var pc=mc.length?Math.round(p/mc.length*100):0,low=pc<75;
+    s+='<div class="row" style="display:block"><div style="display:flex;justify-content:space-between"><span>'+esc(st.name)+'</span><span><b>'+pc+'%</b> <span class="mu">('+p+'/'+mc.length+')</span></span></div><div class="bar"><i style="width:'+pc+'%;background:var(--'+(low?"no":"ok")+')"></i></div>'+(low&&mc.length?'<span class="warn">Low attendance (below 75%)</span>':'')+'</div>';
+  });
+  s+='</div>';
+  document.getElementById("v2").innerHTML=s;
+  document.getElementById("mo").onchange=function(){month=this.value||month;render()};
+
+  /* Students */
+  var m='<div class="card tools"><input id="nn" placeholder="Student name" style="flex:1"><input id="rn" placeholder="Roll no" style="width:100px"><input id="pn" placeholder="PIN" inputmode="numeric" style="width:80px"><button class="btn" onclick="addStudent()">Add</button></div><div class="card">';
+  if(!students.length)m+='<p class="mu">Your class list is empty.</p>';
+  students.forEach(function(st){m+='<div class="row"><span class="nm">'+esc(st.name)+' <span class="mu">'+esc(st.roll_no||"")+'</span> '+(st.pin?'':'<span class="warn">no PIN</span>')+'</span><button class="x" onclick="setPin(\''+st.id+'\')" aria-label="Set PIN">🔑</button><button class="x" onclick="delStudent(\''+st.id+'\')" aria-label="Remove">✕</button></div>'});
+  m+='</div>';
+  document.getElementById("v3").innerHTML=m;
+}
+
+async function studentMode(cid){
+  var tok=(new URLSearchParams(location.search).get("t")||"").replace(/[^a-fA-F0-9]/g,"");
+  document.querySelector(".tabs").hidden=true;
+  ["v2","v3"].forEach(function(i){document.getElementById(i).hidden=true});
+  var box=document.getElementById("v1");
+  var q=await db.rpc("get_class",{p_id:cid});
+  var r={error:q.error,data:q.data&&q.data[0]};
+  if(r.error||!r.data){box.innerHTML='<div class="card">This class link is not valid.</div>';return}
+  var open=r.data.is_open;
+  if(!open){box.innerHTML='<div class="card"><h2 style="margin:0 0 4px">'+esc(r.data.subject)+'</h2><p class="warn">Attendance is closed for this class.</p></div>';return}
+  box.innerHTML='<div class="card"><h2 style="margin:0 0 4px">'+esc(r.data.subject)+'</h2><p class="mu">'+r.data.class_date+'</p><input id="roll" placeholder="Your roll number" style="width:100%;margin-bottom:8px"><input id="pin" type="password" inputmode="numeric" placeholder="Your PIN" style="width:100%;margin-bottom:10px"><button class="btn" style="width:100%" onclick="selfMark(\''+cid+'\',\''+tok+'\')">I’m present</button><p id="res"></p></div>';
+}
+
+function rnd(){var a=new Uint8Array(12);crypto.getRandomValues(a);return Array.from(a,function(b){return("0"+b.toString(16)).slice(-2)}).join("")}
+function deviceId(){try{var d=localStorage.getItem("att_device");if(!d){d=rnd();localStorage.setItem("att_device",d)}return d}catch(e){return rnd()}}
+
+async function selfMark(cid,tok){
+  var roll=val("roll").trim(),pin=val("pin").trim(),res=document.getElementById("res");
+  if(!roll||!pin){res.textContent="Enter your roll number and PIN.";return}
+  var r=await db.rpc("mark_present",{p_class:cid,p_roll:roll,p_pin:pin,p_device:deviceId(),p_token:tok||""});
+  if(r.error){
+    var m=r.error.message;
+    res.textContent=/closed/.test(m)?"Attendance is closed for this class.":/expired/.test(m)?"This QR has expired. Scan the screen again.":/bad_login/.test(m)?"Roll number or PIN is wrong.":/device_used/.test(m)?"This phone has already marked attendance for another student.":m;
+    return;
+  }
+  res.textContent="Marked present: "+r.data+" ✓";
+}
+
+/* teacher side: rotating QR + PIN setting */
+var qrTok=null;
+async function rotate(){
+  if(!cur)return;
+  var c=curClass();
+  if(!c||!c.closes_at||new Date(c.closes_at)<=new Date())return;
+  var t=rnd();
+  var r=await db.from("class_tokens").insert({class_id:cur,token:t});
+  if(r.error){msg(r.error.message);return}
+  qrTok=t;drawQR();
+}
+function drawQR(){
+  var el=document.getElementById("qr");
+  if(!el||!cur||!qrTok)return;
+  el.innerHTML="";
+  var link=location.href.split("?")[0].split("#")[0]+"?class="+cur+"&t="+qrTok;
+  new QRCode(el,{text:link,width:180,height:180});
+}
+async function setPin(id){
+  var p=prompt("Enter a PIN for this student (4 to 6 digits):");
+  if(!p)return;p=p.trim();
+  if(!/^\d{4,6}$/.test(p)){msg("PIN must be 4 to 6 digits.");return}
+  var r=await db.from("students").update({pin:p}).eq("id",id);
+  if(r.error){msg(r.error.message);return}
+  load();
+}
+
+async function refresh(){
+  if(!cur||document.activeElement.tagName==="INPUT")return;
+  var c=await db.from("attendance").select("*");
+  if(c.error)return;
+  var n={};c.data.forEach(function(r){n[r.student_id+"|"+r.class_id]=r.status});
+  if(JSON.stringify(n)!==JSON.stringify(att)){att=n;render()}
+}
+
+function exportXlsx(){
+  if(!window.XLSX){msg("The Excel library did not load. Check your internet and refresh.");return}
+  var mc=classes.filter(function(c){return c.class_date.slice(0,7)===month}).sort(function(a,b){
+    if(a.class_date!==b.class_date)return a.class_date<b.class_date?-1:1;
+    return a.subject<b.subject?-1:1;
+  });
+  if(!mc.length||!students.length){msg("Nothing to export for this month.");return}
+  msg("");
+  var head=["Roll no","Name"].concat(mc.map(function(c){return c.class_date+" "+c.subject}),["Present","Classes held","Percentage"]);
+  var rows=[head];
+  students.forEach(function(st){
+    var p=0;
+    var cells=mc.map(function(c){var ok=att[st.id+"|"+c.id]==="present";if(ok)p++;return ok?"P":"A"});
+    rows.push([st.roll_no||"",st.name].concat(cells,[p,mc.length,Math.round(p/mc.length*100)+"%"]));
+  });
+  var ws=XLSX.utils.aoa_to_sheet(rows),wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,"Attendance");
+  XLSX.writeFile(wb,"attendance-"+month+".xlsx");
+}
+
+async function logout(){await db.auth.signOut();location.reload()}
+async function login(){
+  var r=await db.auth.signInWithPassword({email:val("em").trim(),password:val("pw")});
+  if(r.error){msg(r.error.message);return}
+  msg("");start();
+}
+function showLogin(){
+  document.querySelector(".tabs").hidden=true;
+  ["v1","v2","v3"].forEach(function(i){document.getElementById(i).hidden=true});
+  var v=document.getElementById("vl");v.hidden=false;
+  v.innerHTML='<div class="card"><h2 style="margin:0 0 8px">Teacher login</h2><input id="em" type="email" placeholder="Email" style="width:100%;margin-bottom:8px"><input id="pw" type="password" placeholder="Password" style="width:100%;margin-bottom:10px"><button class="btn" style="width:100%" onclick="login()">Log in</button></div>';
+  document.getElementById("pw").onkeydown=function(e){if(e.key==="Enter")login()};
+}
+async function start(){
+  var s=await db.auth.getSession();
+  if(!s.data.session){showLogin();return}
+  document.getElementById("vl").hidden=true;
+  document.querySelector(".tabs").hidden=false;
+  document.getElementById("lo").hidden=false;
+  show(1);load();
+  if(!window.timersOn){window.timersOn=1;setInterval(refresh,4000);setInterval(tick,1000);setInterval(rotate,30000)}
+}
+
+var qp=new URLSearchParams(location.search).get("class");
+if(SB_URL.indexOf("PASTE")===0){msg("Open this file in VS Code and paste your Supabase URL and key near the top of the script.");render()}
+else if(qp){studentMode(qp)}
+else{start()}
+</script></body></html>
