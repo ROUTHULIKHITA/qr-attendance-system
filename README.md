@@ -2,7 +2,7 @@
 
 A web-based attendance system for college classes. A teacher starts a class and shows a QR code. Students scan it on their phones and mark themselves present using a roll number and a personal PIN. Teachers get live updates, monthly percentages with low-attendance warnings, and an Excel export.
 
-**Live demo:** _add your Netlify link here_
+**Live demo:** https://amazing-pasca-124f6b.netlify.app
 
 ## Screenshots
 
